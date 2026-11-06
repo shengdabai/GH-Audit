@@ -7,33 +7,3 @@ dist/
 build/
 *.egg-info/
 .pytest_cache/
-
-# Codex governance: local secrets and machine state
-.env
-.env.*
-.env.local
-*.env
-!.env.example
-!.env.*.example
-*.pem
-*.p12
-*.pfx
-id_rsa
-id_dsa
-.npmrc
-
-# internal design & planning docs
-docs/superpowers/
-.omc/
-.codex/
-.claude/local/
-*-todo.md
-*.pipeline-state.json
-
-# config with potential token
-~/.gh-audit/
-
-# editor / OS
-.DS_Store
-.idea/
-.vscode/

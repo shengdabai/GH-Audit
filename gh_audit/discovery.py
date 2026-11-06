@@ -47,13 +47,14 @@ def get_repo_info(repo_name: str, token: str | None = None) -> RepoInfo:
     )
 
 
-def clone_repo(repo_info: RepoInfo, token: str | None = None) -> str:
+def clone_repo(repo_info: RepoInfo, token: str | None = None, branch: str | None = None) -> str:
     tmp_dir = tempfile.mkdtemp(prefix="gh-audit-")
     clone_url = repo_info.clone_url
     if token:
         clone_url = clone_url.replace("https://", f"https://x-access-token:{token}@")
     try:
-        git.Repo.clone_from(clone_url, tmp_dir, depth=1)
+        requested_branch = branch or repo_info.default_branch
+        git.Repo.clone_from(clone_url, tmp_dir, depth=1, branch=requested_branch, single_branch=True)
     except git.exc.GitCommandError as e:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         # Redact token from error message before raising
@@ -66,3 +67,8 @@ def clone_repo(repo_info: RepoInfo, token: str | None = None) -> str:
 
 def cleanup_repo(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
+
+
+def checkout_sha(path: str) -> str:
+    """Report the commit actually scanned, not discovery-time default HEAD."""
+    return git.Repo(path).head.commit.hexsha

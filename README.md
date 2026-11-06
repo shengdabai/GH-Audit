@@ -1,78 +1,55 @@
 # gh-audit
 
-One-command security audit for GitHub repos & orgs: secrets, PII, vuln deps, IaC & governance — redaction-first Python CLI
+GitHub repository security audit tool. Scans for secrets, PII, code vulnerabilities, dependency risks, IaC misconfigurations, and governance gaps.
 
-## Business Context
+## Install
 
-- **Category:** security and governance tool
-- **Audience:** builders and operators who need safer repositories, cleaner handoffs, and repeatable security checks.
-- **Repository status:** Public repository. Keep examples, docs, and issues free of credentials, private data, and machine-specific paths.
-- **Topics:** audit, cli, devsecops, github, pii, python, secrets-detection, security, vulnerability-scanner
-
-## What This Project Is For
-
-- One-command security audit for GitHub repos & orgs: secrets, PII, vuln deps, IaC & governance — redaction-first Python CLI.
-- Find repository risks early without exposing secrets in reports.
-- Make security review repeatable across public and private codebases.
-
-## Where It Fits
-
-This repository belongs in the trust-and-safety layer of the workbench: it helps make code, configuration, and public handoffs safer before they are reused or shown to clients.
-
-## Technical Overview
-
-- **Primary language:** Python
-- **Detected stack:** Python, Python project metadata
-- **Default branch:** `main`
-- **Visibility:** `PUBLIC`
-- **License:** MIT License
-
-## Repository Map
-
-- `docs`
-- `tests`
-- `LICENSE`
-- `README.md`
-- `SECURITY.md`
-- `gh_audit`
-- `pyproject.toml`
+```bash
+pipx install gh-audit
+# or
+pip install gh-audit
+```
 
 ## Quick Start
 
-Use the commands that match the current project state:
-
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-python3 -m pytest
+export GITHUB_TOKEN=ghp_yourtoken
+
+# Scan a repo
+gh-audit scan owner/repo
+
+# Scan an org, output HTML + JSON
+gh-audit scan --org myorg --output terminal,json,html
+
+# Check tool availability
+gh-audit doctor
 ```
 
-| Command | Purpose |
-|---|---|
-| `python3 -m venv .venv && source .venv/bin/activate` | Create an isolated Python environment. |
-| `python3 -m pytest` | Run the Python test suite. |
+## Detection Modules
 
-## Operating Notes
+| Module | Built-in | Enhanced with |
+|--------|---------|---------------|
+| secrets | ✓ entropy + regex | gitleaks, trufflehog |
+| pii | ✓ CN phone/ID/bank + email | presidio |
+| governance | ✓ GitHub API | - |
+| sast | - | semgrep, bandit |
+| sca | ✓ OSV API fallback | osv-scanner |
+| iac | - | trivy, checkov |
 
-- Keep real credentials out of the repository. Use local environment files, GitHub repository secrets, or the deployment platform secret manager.
-- If a `.env.example` file exists, treat it as documentation only; never commit filled-in `.env` files.
-- Before publishing screenshots, demos, or client examples, remove private names, internal paths, account IDs, and API endpoints.
-- The `Repository Hygiene` workflow is a lightweight guardrail, not a replacement for product-specific tests.
+## Optional Tools
 
-## Delivery Checklist
+```bash
+pip install semgrep bandit       # SAST
+brew install osv-scanner trivy   # SCA + IaC
+```
 
-- [ ] README describes the user, business outcome, and operating boundary.
-- [ ] Setup or preview commands are current and do not rely on private machine state.
-- [ ] No real secrets, private user data, or machine-local state are tracked.
-- [ ] Screenshots, demos, or sample outputs are safe to share publicly when the repository is public.
-- [ ] Product-specific tests or smoke checks are documented before production use.
+## CLI Reference
 
-## Roadmap
-
-- Tighten the fastest path from clone to useful demo.
-- Add project-specific screenshots, sample outputs, or a short walkthrough where useful.
-- Promote repeated manual steps into scripts, tests, or documented workflows.
-- Keep security, privacy, and licensing boundaries explicit as the project evolves.
-
-## Maintainer Notes
-
-Maintained by [Tony Sheng](https://github.com/shengdabai). This README is written as a business-facing handoff: it should help a future collaborator, client, or reviewer understand why the repository exists, how to inspect it, and what must be true before it is reused or shipped.
+```bash
+gh-audit scan owner/repo [--branch main] [--modules secrets,pii] [--output terminal,json,html] [--min-severity high] [--diff]
+gh-audit scan --org myorg
+gh-audit doctor
+gh-audit history owner/repo
+gh-audit suppress <finding_id> --reason "false positive" --expires 30d
+gh-audit config set token ghp_xxx
+```
