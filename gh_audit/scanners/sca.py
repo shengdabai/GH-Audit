@@ -65,27 +65,13 @@ class ScaScanner(BaseScanner):
     def _osv_api_fallback(self, repo_path: str, config: ScanConfig) -> list[Finding]:
         lock_files = list(Path(repo_path).rglob("requirements*.txt")) + \
                      list(Path(repo_path).rglob("package-lock.json"))
-        if len(lock_files) > 5:
-            console.print(
-                f"[yellow][sca] {len(lock_files)} lock files found, scanning first 5[/yellow]"
-            )
         findings = []
         for lock in lock_files[:5]:
             try:
                 text = lock.read_text(encoding="utf-8", errors="ignore")
-                # Detect ecosystem based on lock file type
-                if lock.name == "package-lock.json":
-                    ecosystem = "npm"
-                    packages = self._parse_package_lock(text)
-                else:
-                    ecosystem = "PyPI"
-                    packages = self._parse_requirements(text)
-                if len(packages) > 20:
-                    console.print(
-                        f"[yellow][sca] {lock.name}: {len(packages)} packages found, scanning first 20[/yellow]"
-                    )
+                packages = self._parse_requirements(text)
                 # Batch OSV API calls
-                vulns_by_pkg = self._query_osv_api_batch(packages[:20], ecosystem=ecosystem)
+                vulns_by_pkg = self._query_osv_api_batch(packages[:20])
                 for (pkg, version), vulns in vulns_by_pkg.items():
                     for v in vulns:
                         f = Finding(
@@ -121,36 +107,12 @@ class ScaScanner(BaseScanner):
                 results.append((m.group(1), m.group(2)))
         return results
 
-    def _parse_package_lock(self, text: str) -> list[tuple[str, str]]:
-        """Parse package-lock.json and return (name, version) pairs."""
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            return []
-        results = []
-        # package-lock.json v2/v3: top-level "packages" dict
-        packages = data.get("packages", {})
-        for path, info in packages.items():
-            if not path or path == "":
-                continue  # skip root entry
-            name = info.get("name") or path.lstrip("node_modules/").split("/node_modules/")[-1]
-            version = info.get("version", "")
-            if name and version:
-                results.append((name, version))
-        # package-lock.json v1 fallback: top-level "dependencies" dict
-        if not results:
-            for name, info in data.get("dependencies", {}).items():
-                version = info.get("version", "")
-                if name and version:
-                    results.append((name, version))
-        return results
-
-    def _query_osv_api_batch(self, packages: list[tuple[str, str]], ecosystem: str = "PyPI") -> dict[tuple[str, str], list[dict]]:
+    def _query_osv_api_batch(self, packages: list[tuple[str, str]]) -> dict[tuple[str, str], list[dict]]:
         """Use OSV batch endpoint to query all packages in one request."""
         if not packages:
             return {}
         queries = [
-            {"version": version, "package": {"name": pkg, "ecosystem": ecosystem}}
+            {"version": version, "package": {"name": pkg, "ecosystem": "PyPI"}}
             for pkg, version in packages
         ]
         try:

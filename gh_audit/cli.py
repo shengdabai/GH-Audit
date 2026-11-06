@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 
 from gh_audit.config import Config
-from gh_audit.discovery import cleanup_repo, clone_repo, get_repo_info, list_org_repos
+from gh_audit.discovery import cleanup_repo, clone_repo, checkout_sha, get_repo_info, list_org_repos
 from gh_audit.models import Severity
 from gh_audit.normalizer import deduplicate, diff_findings, load_previous_content_fingerprints, load_suppressions
 from gh_audit.reporters.html_report import HtmlReporter
@@ -92,7 +92,8 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         all_findings = []
         repo_path = None
         try:
-            repo_path = clone_repo(repo_info, cfg.token)
+            repo_path = clone_repo(repo_info, cfg.token, branch=scan_cfg.branch)
+            scan_cfg.commit_sha = checkout_sha(repo_path)
             for mod_name in enabled_modules:
                 if mod_name == "governance":
                     scanner = GovernanceScanner(token=cfg.token)
