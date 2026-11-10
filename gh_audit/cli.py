@@ -13,7 +13,7 @@ from gh_audit.normalizer import deduplicate, diff_findings, load_previous_conten
 from gh_audit.reporters.html_report import HtmlReporter
 from gh_audit.reporters.json_report import JsonReporter
 from gh_audit.reporters.terminal import TerminalReporter
-from gh_audit.scanners.base import ScanConfig
+from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 from gh_audit.scanners.governance import GovernanceScanner
 from gh_audit.scanners.iac import IacScanner
 from gh_audit.scanners.pii import PiiScanner
@@ -103,15 +103,21 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
                 else:
                     console.print(f"[yellow]Unknown module: {mod_name}[/yellow]")
                     continue
-                if not scanner.is_available():
-                    console.print(f"[dim][SKIP] {mod_name} — tool not found[/dim]")
+                # A module that cannot finish is reported per module; the other
+                # modules' findings are kept and the command still exits 1.
+                try:
+                    if not scanner.is_available():
+                        raise ScanIncompleteError(f"{mod_name} tool not found")
+                    findings = scanner.scan(repo_path, scan_cfg)
+                except ScanIncompleteError as e:
+                    failed = True
+                    console.print(f"  [red][INCOMPLETE][/red] {mod_name}: {e}")
                     continue
-                findings = scanner.scan(repo_path, scan_cfg)
                 all_findings.extend(findings)
                 console.print(f"  [green]✓[/green] {mod_name}: {len(findings)} findings")
         except RuntimeError as e:
             failed = True
-            console.print(f"[red]✗ Skipping {repo_info.full_name}: {e}[/red]")
+            console.print(f"[red][INCOMPLETE] {repo_info.full_name}: {e}[/red]")
             continue
         finally:
             if repo_path:

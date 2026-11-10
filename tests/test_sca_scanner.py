@@ -3,7 +3,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 import pytest
 from gh_audit.scanners.sca import ScaScanner
-from gh_audit.scanners.base import ScanConfig
+from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 
 
 def _cfg():
@@ -40,11 +40,11 @@ def test_osv_scanner_returns_findings(tmp_path):
     assert "requests" in findings[0].evidence_redacted
 
 
-def test_osv_scanner_timeout_returns_empty(tmp_path):
+def test_osv_scanner_timeout_raises_incomplete(tmp_path):
     with patch("shutil.which", return_value="/usr/bin/osv-scanner"):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("osv-scanner", 120)):
-            findings = ScaScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                ScaScanner().scan(str(tmp_path), _cfg())
 
 
 def test_osv_api_fallback_parses_requirements(tmp_path):
@@ -72,9 +72,8 @@ def test_osv_api_fallback_handles_network_error(tmp_path):
 
     with patch("shutil.which", return_value=None):
         with patch("requests.post", side_effect=req_lib.RequestException("timeout")):
-            findings = ScaScanner().scan(str(tmp_path), _cfg())
-
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                ScaScanner().scan(str(tmp_path), _cfg())
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])
@@ -114,16 +113,18 @@ def test_fallback_checks_beyond_old_file_and_package_limits(tmp_path):
     assert all(len(call.args[0]) <= 100 for call in query.call_args_list)
 
 
-def test_osv_http_error_does_not_produce_findings():
+def test_osv_http_error_raises_incomplete():
     import requests
     response = MagicMock()
     response.raise_for_status.side_effect = requests.HTTPError("server error")
     with patch("requests.post", return_value=response):
-        assert ScaScanner()._query_osv_api_batch([("package", "1.0.0")]) == {}
+        with pytest.raises(ScanIncompleteError):
+            ScaScanner()._query_osv_api_batch([("package", "1.0.0")])
     response.json.assert_not_called()
 
 
 @pytest.mark.parametrize("lock", [[], {"packages": []}, {"dependencies": []}])
-def test_malformed_lockfile_does_not_crash_fallback(tmp_path, lock):
+def test_malformed_lockfile_raises_incomplete(tmp_path, lock):
     (tmp_path / "package-lock.json").write_text(json.dumps(lock))
-    assert ScaScanner()._osv_api_fallback(str(tmp_path), _cfg()) == []
+    with pytest.raises(ScanIncompleteError):
+        ScaScanner()._osv_api_fallback(str(tmp_path), _cfg())

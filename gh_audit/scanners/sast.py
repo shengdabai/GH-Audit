@@ -1,14 +1,10 @@
-import json
-import subprocess
 import uuid
 from datetime import datetime, timezone
 
-from rich.console import Console
-
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
-from gh_audit.scanners.base import BaseScanner, ScanConfig
-
-console = Console()
+from gh_audit.scanners.base import (
+    BaseScanner, ScanConfig, ScanIncompleteError, result_records, run_json_tool,
+)
 
 
 class SastScanner(BaseScanner):
@@ -18,30 +14,21 @@ class SastScanner(BaseScanner):
         return self._external_tool_available("semgrep") or self._external_tool_available("bandit")
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        if self._external_tool_available("semgrep"):
-            return self._run_semgrep(repo_path, config)
-        if self._external_tool_available("bandit"):
-            return self._run_bandit(repo_path, config)
-        return []
+        try:
+            if self._external_tool_available("semgrep"):
+                return self._run_semgrep(repo_path, config)
+            if self._external_tool_available("bandit"):
+                return self._run_bandit(repo_path, config)
+            raise ScanIncompleteError("scan incomplete: no sast tool found")
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError) as exc:
+            raise ScanIncompleteError("scan incomplete: sast returned invalid or unreadable data") from exc
 
     def _run_semgrep(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        try:
-            result = subprocess.run(
-                ["semgrep", "--config=auto", "--json", repo_path],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode not in (0, 1):
-                console.print(f"[yellow][sast] semgrep exited {result.returncode}: {result.stderr[:200]}[/yellow]")
-                return []
-            data = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            console.print("[yellow][sast] semgrep timed out after 120s[/yellow]")
-            return []
-        except json.JSONDecodeError as e:
-            console.print(f"[yellow][sast] semgrep returned invalid JSON: {e}[/yellow]")
-            return []
+        data = run_json_tool(["semgrep", "--config=auto", "--json", repo_path])
         findings = []
-        for r in data.get("results", []):
+        if data.get("errors"):
+            raise ScanIncompleteError("scan incomplete: semgrep reported scan errors")
+        for r in result_records(data, "results"):
             sev_map = {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM, "INFO": Severity.LOW}
             sev = sev_map.get(r.get("extra", {}).get("severity", "INFO"), Severity.LOW)
             f = Finding(
@@ -63,23 +50,11 @@ class SastScanner(BaseScanner):
         return findings
 
     def _run_bandit(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        try:
-            result = subprocess.run(
-                ["bandit", "-r", repo_path, "-f", "json"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode not in (0, 1):
-                console.print(f"[yellow][sast] bandit exited {result.returncode}: {result.stderr[:200]}[/yellow]")
-                return []
-            data = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            console.print("[yellow][sast] bandit timed out after 120s[/yellow]")
-            return []
-        except json.JSONDecodeError as e:
-            console.print(f"[yellow][sast] bandit returned invalid JSON: {e}[/yellow]")
-            return []
+        data = run_json_tool(["bandit", "-r", repo_path, "-f", "json"])
         findings = []
-        for r in data.get("results", []):
+        if data.get("errors"):
+            raise ScanIncompleteError("scan incomplete: bandit reported scan errors")
+        for r in result_records(data, "results"):
             sev_map = {"HIGH": Severity.HIGH, "MEDIUM": Severity.MEDIUM, "LOW": Severity.LOW}
             sev = sev_map.get(r.get("issue_severity", "LOW"), Severity.LOW)
             f = Finding(

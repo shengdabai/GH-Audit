@@ -1,47 +1,34 @@
 import json
 import re
-import subprocess
 import uuid
 from datetime import datetime, timezone
 
 import requests
-from rich.console import Console
-
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
-from gh_audit.scanners.base import BaseScanner, ScanConfig, iter_repo_files
-
-console = Console()
+from gh_audit.scanners.base import (
+    BaseScanner, ScanConfig, ScanIncompleteError, iter_repo_files, result_records,
+    run_json_tool,
+)
 
 
 class ScaScanner(BaseScanner):
     name = "sca"
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        if self._external_tool_available("osv-scanner"):
-            return self._run_osv_scanner(repo_path, config)
-        return self._osv_api_fallback(repo_path, config)
+        try:
+            if self._external_tool_available("osv-scanner"):
+                return self._run_osv_scanner(repo_path, config)
+            return self._osv_api_fallback(repo_path, config)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError) as exc:
+            raise ScanIncompleteError("scan incomplete: sca returned invalid or unreadable data") from exc
 
     def _run_osv_scanner(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        try:
-            result = subprocess.run(
-                ["osv-scanner", "--format=json", repo_path],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode not in (0, 1):
-                console.print(f"[yellow][sca] osv-scanner exited {result.returncode}: {result.stderr[:200]}[/yellow]")
-                return []
-            data = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            console.print("[yellow][sca] osv-scanner timed out after 120s[/yellow]")
-            return []
-        except json.JSONDecodeError as e:
-            console.print(f"[yellow][sca] osv-scanner returned invalid JSON: {e}[/yellow]")
-            return []
+        data = run_json_tool(["osv-scanner", "--format=json", repo_path])
         findings = []
-        for r in data.get("results", []):
-            for pkg in r.get("packages", []):
+        for r in result_records(data, "results", nullable=True):
+            for pkg in result_records(r, "packages"):
                 pkg_info = pkg.get("package", {})
-                for vuln in pkg.get("vulnerabilities", []):
+                for vuln in result_records(pkg, "vulnerabilities", optional=True):
                     f = Finding(
                         finding_id=str(uuid.uuid4()), fingerprint="",
                         repo=config.repo, branch=config.branch, commit_sha=config.commit_sha,
@@ -67,7 +54,7 @@ class ScaScanner(BaseScanner):
         findings = []
         for lock in lock_files:
             try:
-                text = lock.read_text(encoding="utf-8", errors="ignore")
+                text = lock.read_text(encoding="utf-8")
                 ecosystem = "npm" if lock.name == "package-lock.json" else "PyPI"
                 packages = (self._parse_package_lock(text) if ecosystem == "npm"
                             else self._parse_requirements(text))
@@ -94,9 +81,8 @@ class ScaScanner(BaseScanner):
                         )
                         f.fingerprint = f.compute_fingerprint()
                         findings.append(f)
-            except (OSError, ValueError, KeyError) as e:
-                console.print(f"[yellow][sca] error scanning {lock}: {e}[/yellow]")
-                continue
+            except (OSError, ValueError, KeyError) as exc:
+                raise ScanIncompleteError("scan incomplete: could not read dependency file") from exc
         return findings
 
     def _parse_requirements(self, text: str) -> list[tuple[str, str]]:
@@ -155,12 +141,16 @@ class ScaScanner(BaseScanner):
                 timeout=15,
             )
             resp.raise_for_status()
-            results = resp.json().get("results", [])
-        except (requests.RequestException, ValueError, KeyError) as e:
-            console.print(f"[yellow][sca] OSV API error: {e}[/yellow]")
-            return {}
+            results = result_records(resp.json(), "results")
+            if len(results) != len(packages):
+                raise ValueError("OSV batch result count does not match query count")
+            for result in results:
+                if result.get("error"):
+                    raise ValueError("OSV batch returned an error")
+                result_records(result, "vulns", optional=True)
+        except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ScanIncompleteError("scan incomplete: OSV API request or response failed") from exc
         return {
             packages[i]: result.get("vulns", [])
             for i, result in enumerate(results)
-            if i < len(packages)
         }

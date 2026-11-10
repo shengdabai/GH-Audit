@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import subprocess
 import pytest
 from gh_audit.scanners.sast import SastScanner
-from gh_audit.scanners.base import ScanConfig
+from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 from gh_audit.models import Severity
 
 
@@ -59,14 +59,14 @@ def test_semgrep_returns_findings(tmp_path):
     assert findings[0].file_path == "app/main.py"
 
 
-def test_semgrep_timeout_returns_empty(tmp_path):
+def test_semgrep_timeout_raises_incomplete(tmp_path):
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/semgrep" if t == "semgrep" else None):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("semgrep", 120)):
-            findings = SastScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                SastScanner().scan(str(tmp_path), _cfg())
 
 
-def test_semgrep_invalid_json_returns_empty(tmp_path):
+def test_semgrep_invalid_json_raises_incomplete(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "not valid json {"
@@ -74,11 +74,11 @@ def test_semgrep_invalid_json_returns_empty(tmp_path):
 
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/semgrep" if t == "semgrep" else None):
         with patch("subprocess.run", return_value=mock_result):
-            findings = SastScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                SastScanner().scan(str(tmp_path), _cfg())
 
 
-def test_semgrep_nonzero_returncode_returns_empty(tmp_path):
+def test_semgrep_nonzero_returncode_raises_incomplete(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 2
     mock_result.stdout = ""
@@ -86,8 +86,8 @@ def test_semgrep_nonzero_returncode_returns_empty(tmp_path):
 
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/semgrep" if t == "semgrep" else None):
         with patch("subprocess.run", return_value=mock_result):
-            findings = SastScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                SastScanner().scan(str(tmp_path), _cfg())
 
 
 def test_bandit_returns_findings(tmp_path):
