@@ -3,13 +3,12 @@ import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import requests
 from rich.console import Console
 
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
-from gh_audit.scanners.base import BaseScanner, ScanConfig
+from gh_audit.scanners.base import BaseScanner, ScanConfig, iter_repo_files
 
 console = Console()
 
@@ -63,15 +62,19 @@ class ScaScanner(BaseScanner):
         return findings
 
     def _osv_api_fallback(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        lock_files = list(Path(repo_path).rglob("requirements*.txt")) + \
-                     list(Path(repo_path).rglob("package-lock.json"))
+        lock_files = (path for path in iter_repo_files(repo_path)
+                      if path.match("requirements*.txt") or path.name == "package-lock.json")
         findings = []
-        for lock in lock_files[:5]:
+        for lock in lock_files:
             try:
                 text = lock.read_text(encoding="utf-8", errors="ignore")
-                packages = self._parse_requirements(text)
+                ecosystem = "npm" if lock.name == "package-lock.json" else "PyPI"
+                packages = (self._parse_package_lock(text) if ecosystem == "npm"
+                            else self._parse_requirements(text))
                 # Batch OSV API calls
-                vulns_by_pkg = self._query_osv_api_batch(packages[:20])
+                vulns_by_pkg = {}
+                for start in range(0, len(packages), 100):
+                    vulns_by_pkg.update(self._query_osv_api_batch(packages[start:start + 100], ecosystem))
                 for (pkg, version), vulns in vulns_by_pkg.items():
                     for v in vulns:
                         f = Finding(
@@ -107,12 +110,42 @@ class ScaScanner(BaseScanner):
                 results.append((m.group(1), m.group(2)))
         return results
 
-    def _query_osv_api_batch(self, packages: list[tuple[str, str]]) -> dict[tuple[str, str], list[dict]]:
+    def _parse_package_lock(self, text: str) -> list[tuple[str, str]]:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("package-lock.json must contain an object")
+        packages = []
+
+        def add(name, info):
+            name = info.get("name") or name
+            version = info.get("version", "")
+            # Local paths and Git URLs are not registry versions.
+            if isinstance(name, str) and isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?", version):
+                packages.append((name, version))
+
+        if "packages" in data:  # lockfile v2/v3
+            if not isinstance(data["packages"], dict):
+                raise ValueError("package-lock packages must contain an object")
+            for path, info in data["packages"].items():
+                if "node_modules/" in path and isinstance(info, dict):
+                    add(path.rsplit("node_modules/", 1)[-1], info)
+        else:  # lockfile v1
+            def visit(dependencies):
+                if not isinstance(dependencies, dict):
+                    raise ValueError("package-lock dependencies must contain an object")
+                for name, info in dependencies.items():
+                    if isinstance(info, dict):
+                        add(name, info)
+                        visit(info.get("dependencies", {}))
+            visit(data.get("dependencies", {}))
+        return list(dict.fromkeys(packages))
+
+    def _query_osv_api_batch(self, packages: list[tuple[str, str]], ecosystem: str = "PyPI") -> dict[tuple[str, str], list[dict]]:
         """Use OSV batch endpoint to query all packages in one request."""
         if not packages:
             return {}
         queries = [
-            {"version": version, "package": {"name": pkg, "ecosystem": "PyPI"}}
+            {"version": version, "package": {"name": pkg, "ecosystem": ecosystem}}
             for pkg, version in packages
         ]
         try:
@@ -121,6 +154,7 @@ class ScaScanner(BaseScanner):
                 json={"queries": queries},
                 timeout=15,
             )
+            resp.raise_for_status()
             results = resp.json().get("results", [])
         except (requests.RequestException, ValueError, KeyError) as e:
             console.print(f"[yellow][sca] OSV API error: {e}[/yellow]")

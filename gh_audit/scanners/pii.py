@@ -5,7 +5,7 @@ from pathlib import Path
 
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
 from gh_audit.normalizer import redact_email, redact_id_number, redact_phone, redact_secret
-from gh_audit.scanners.base import BaseScanner, ScanConfig, SKIP_DIRS
+from gh_audit.scanners.base import BaseScanner, ScanConfig, iter_repo_files
 
 _TEXT_EXTENSIONS = {
     ".txt", ".csv", ".json", ".log", ".sql", ".md",
@@ -49,11 +49,7 @@ class PiiScanner(BaseScanner):
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
         findings: list[Finding] = []
-        for path in Path(repo_path).rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
+        for path in iter_repo_files(repo_path):
             if not _is_text_file(path):
                 continue
             try:
