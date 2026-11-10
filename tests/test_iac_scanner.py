@@ -3,7 +3,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 import pytest
 from gh_audit.scanners.iac import IacScanner
-from gh_audit.scanners.base import ScanConfig
+from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 from gh_audit.models import Severity
 
 
@@ -50,14 +50,14 @@ def test_trivy_returns_findings(tmp_path):
     assert findings[0].file_path == "terraform/main.tf"
 
 
-def test_trivy_timeout_returns_empty(tmp_path):
+def test_trivy_timeout_raises_incomplete(tmp_path):
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/trivy" if t == "trivy" else None):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("trivy", 120)):
-            findings = IacScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                IacScanner().scan(str(tmp_path), _cfg())
 
 
-def test_trivy_invalid_json_returns_empty(tmp_path):
+def test_trivy_invalid_json_raises_incomplete(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "not json"
@@ -65,8 +65,8 @@ def test_trivy_invalid_json_returns_empty(tmp_path):
 
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/trivy" if t == "trivy" else None):
         with patch("subprocess.run", return_value=mock_result):
-            findings = IacScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                IacScanner().scan(str(tmp_path), _cfg())
 
 
 def test_checkov_returns_findings(tmp_path):
@@ -94,14 +94,14 @@ def test_checkov_returns_findings(tmp_path):
     assert findings[0].severity == Severity.MEDIUM
 
 
-def test_checkov_timeout_returns_empty(tmp_path):
+def test_checkov_timeout_raises_incomplete(tmp_path):
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/checkov" if t == "checkov" else None):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("checkov", 120)):
-            findings = IacScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                IacScanner().scan(str(tmp_path), _cfg())
 
 
-def test_checkov_invalid_json_returns_empty(tmp_path):
+def test_checkov_invalid_json_raises_incomplete(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "not valid json {"
@@ -109,5 +109,5 @@ def test_checkov_invalid_json_returns_empty(tmp_path):
 
     with patch("shutil.which", side_effect=lambda t: "/usr/bin/checkov" if t == "checkov" else None):
         with patch("subprocess.run", return_value=mock_result):
-            findings = IacScanner().scan(str(tmp_path), _cfg())
-    assert findings == []
+            with pytest.raises(ScanIncompleteError):
+                IacScanner().scan(str(tmp_path), _cfg())

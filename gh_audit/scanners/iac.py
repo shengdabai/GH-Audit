@@ -1,14 +1,10 @@
-import json
-import subprocess
 import uuid
 from datetime import datetime, timezone
 
-from rich.console import Console
-
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
-from gh_audit.scanners.base import BaseScanner, ScanConfig
-
-console = Console()
+from gh_audit.scanners.base import (
+    BaseScanner, ScanConfig, ScanIncompleteError, result_records, run_json_tool,
+)
 
 
 class IacScanner(BaseScanner):
@@ -18,33 +14,22 @@ class IacScanner(BaseScanner):
         return self._external_tool_available("trivy") or self._external_tool_available("checkov")
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        if self._external_tool_available("trivy"):
-            return self._run_trivy(repo_path, config)
-        if self._external_tool_available("checkov"):
-            return self._run_checkov(repo_path, config)
-        return []
+        try:
+            if self._external_tool_available("trivy"):
+                return self._run_trivy(repo_path, config)
+            if self._external_tool_available("checkov"):
+                return self._run_checkov(repo_path, config)
+            raise ScanIncompleteError("scan incomplete: no iac tool found")
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError) as exc:
+            raise ScanIncompleteError("scan incomplete: iac returned invalid or unreadable data") from exc
 
     def _run_trivy(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        try:
-            result = subprocess.run(
-                ["trivy", "config", "--format=json", repo_path],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode not in (0, 1):
-                console.print(f"[yellow][iac] trivy exited {result.returncode}: {result.stderr[:200]}[/yellow]")
-                return []
-            data = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            console.print("[yellow][iac] trivy timed out after 120s[/yellow]")
-            return []
-        except json.JSONDecodeError as e:
-            console.print(f"[yellow][iac] trivy returned invalid JSON: {e}[/yellow]")
-            return []
+        data = run_json_tool(["trivy", "config", "--format=json", repo_path], success_codes=(0,))
         findings = []
         sev_map = {"CRITICAL": Severity.CRITICAL, "HIGH": Severity.HIGH,
                    "MEDIUM": Severity.MEDIUM, "LOW": Severity.LOW}
-        for result_item in data.get("Results", []):
-            for misc in result_item.get("Misconfigurations", []):
+        for result_item in result_records(data, "Results", optional="SchemaVersion" in data, nullable=True):
+            for misc in result_records(result_item, "Misconfigurations", optional=True, nullable=True):
                 sev = sev_map.get(misc.get("Severity", "LOW"), Severity.LOW)
                 f = Finding(
                     finding_id=str(uuid.uuid4()), fingerprint="",
@@ -66,25 +51,20 @@ class IacScanner(BaseScanner):
         return findings
 
     def _run_checkov(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        try:
-            result = subprocess.run(
-                ["checkov", "-d", repo_path, "--output", "json"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode not in (0, 1):
-                console.print(f"[yellow][iac] checkov exited {result.returncode}: {result.stderr[:200]}[/yellow]")
-                return []
-            data = json.loads(result.stdout)
-        except subprocess.TimeoutExpired:
-            console.print("[yellow][iac] checkov timed out after 120s[/yellow]")
-            return []
-        except json.JSONDecodeError as e:
-            console.print(f"[yellow][iac] checkov returned invalid JSON: {e}[/yellow]")
-            return []
+        data = run_json_tool(["checkov", "-d", repo_path, "--output", "json"])
         findings = []
         checks = data if isinstance(data, list) else [data]
         for check_result in checks:
-            for r in check_result.get("results", {}).get("failed_checks", []):
+            results = check_result.get("results")
+            if (check_result.get("summary", {}).get("parsing_errors", 0)
+                    or check_result.get("parsing_errors")
+                    or (isinstance(results, dict) and results.get("parsing_errors"))):
+                raise ScanIncompleteError("scan incomplete: checkov reported parsing errors")
+            if results is None and isinstance(check_result.get("summary"), dict):
+                summary = check_result["summary"]
+                if summary.get("failed") == 0 and isinstance(summary.get("passed"), int):
+                    continue
+            for r in result_records(results, "failed_checks"):
                 f = Finding(
                     finding_id=str(uuid.uuid4()), fingerprint="",
                     repo=config.repo, branch=config.branch, commit_sha=config.commit_sha,
