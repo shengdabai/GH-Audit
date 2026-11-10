@@ -2,11 +2,10 @@ import math
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
 from gh_audit.normalizer import redact_secret
-from gh_audit.scanners.base import BaseScanner, ScanConfig, SKIP_DIRS
+from gh_audit.scanners.base import BaseScanner, ScanConfig, iter_repo_files
 
 _PATTERNS = [
     ("aws-access-key",     r"AKIA[0-9A-Z]{16}",                        Severity.CRITICAL, "Rotate in AWS IAM console",              Confidence.CONFIRMED),
@@ -40,11 +39,7 @@ class SecretsScanner(BaseScanner):
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
         findings: list[Finding] = []
-        for path in Path(repo_path).rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
+        for path in iter_repo_files(repo_path):
             if path.suffix.lower() in _BINARY_EXTENSIONS:
                 continue
             try:
