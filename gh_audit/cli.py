@@ -78,6 +78,7 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         raise SystemExit(1)
 
     min_sev_idx = _SEVERITY_ORDER.index(min_severity)
+    failed = False
 
     for repo_info in repos:
         console.print(f"\n[bold cyan]Scanning:[/bold cyan] {repo_info.full_name}")
@@ -109,6 +110,7 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
                 all_findings.extend(findings)
                 console.print(f"  [green]✓[/green] {mod_name}: {len(findings)} findings")
         except RuntimeError as e:
+            failed = True
             console.print(f"[red]✗ Skipping {repo_info.full_name}: {e}[/red]")
             continue
         finally:
@@ -131,6 +133,9 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
                     if f.compute_content_fingerprint() not in suppressed]
 
         _write_reports(filtered, repo_info.full_name, output_formats, cfg)
+
+    if failed:
+        raise SystemExit(1)
 
 
 def _write_reports(findings, repo_name, output_formats, cfg):

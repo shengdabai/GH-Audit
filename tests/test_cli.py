@@ -84,3 +84,23 @@ def test_config_set_token_warns(tmp_path):
         result = runner.invoke(cli, ["config", "set", "token", "ghp_test"])
     assert result.exit_code == 0
     assert "GITHUB_TOKEN" in result.output or "token" in result.output.lower()
+
+
+def test_failed_clone_returns_failure_and_continues_org_scan(tmp_path):
+    from gh_audit.config import Config
+    from gh_audit.discovery import RepoInfo
+    repos = [RepoInfo(f"org/{name}", "main", True, f"https://github.com/org/{name}.git", "abc")
+             for name in ("failed", "successful")]
+    with patch("gh_audit.cli.Config.load", return_value=Config(results_dir=tmp_path)), \
+         patch("gh_audit.cli.list_org_repos", return_value=repos), \
+         patch("gh_audit.cli.clone_repo", side_effect=[RuntimeError("Clone failed"), str(tmp_path)]), \
+         patch("gh_audit.cli.checkout_sha", return_value="abc"), \
+         patch("gh_audit.cli.SecretsScanner.scan", return_value=[]), \
+         patch("gh_audit.cli.cleanup_repo") as cleanup, \
+         patch("gh_audit.cli._write_reports") as report:
+        result = CliRunner().invoke(cli, ["scan", "--org", "org", "--modules", "secrets"])
+    assert result.exit_code == 1
+    assert "Clone failed" in result.output
+    report.assert_called_once()
+    assert report.call_args.args[1] == "org/successful"
+    cleanup.assert_called_once_with(str(tmp_path))
