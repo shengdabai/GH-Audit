@@ -44,9 +44,15 @@ class Config:
             "min_severity": self.min_severity,
             "history_depth": self.history_depth,
         }
-        _CONFIG_FILE.write_text(json.dumps(data, indent=2))
-        # Restrict permissions: owner read/write only
-        os.chmod(_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        # Set owner-only permissions before writing any credential bytes.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(_CONFIG_FILE, flags, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as stream:
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), stat.S_IRUSR | stat.S_IWUSR)
+            else:
+                os.chmod(_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
+            stream.write(json.dumps(data, indent=2))
 
     def set(self, key: str, value: str) -> None:
         if key == "token":
