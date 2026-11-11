@@ -7,6 +7,39 @@ import pytest
 import gh_audit.config as config
 
 
+@pytest.mark.parametrize("stored_token", [None, "stored-config-canary"])
+def test_unrelated_config_updates_do_not_persist_environment_token(
+    tmp_path, monkeypatch, stored_token,
+):
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(config, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "_CONFIG_FILE", path)
+    monkeypatch.setenv("GITHUB_TOKEN", "session-config-canary")
+    if stored_token is not None:
+        path.write_text(json.dumps({"token": stored_token}))
+
+    cfg = config.Config.load()
+    assert cfg.effective_token == "session-config-canary"
+    cfg.set("history_depth", "25")
+    assert json.loads(path.read_text())["token"] == stored_token
+    assert "session-config-canary" not in path.read_text()
+
+    monkeypatch.delenv("GITHUB_TOKEN")
+    assert config.Config.load().effective_token == stored_token
+
+
+def test_explicit_token_update_persists_even_with_environment_override(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(config, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "_CONFIG_FILE", path)
+    monkeypatch.setenv("GITHUB_TOKEN", "session-config-canary")
+
+    cfg = config.Config.load()
+    cfg.set("token", "replacement-config-canary")
+    assert cfg.effective_token == "session-config-canary"
+    assert json.loads(path.read_text())["token"] == "replacement-config-canary"
+
+
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("descriptor_chmod", [False, True])
 def test_config_is_private_before_secret_serialization(tmp_path, monkeypatch, existing, descriptor_chmod):
