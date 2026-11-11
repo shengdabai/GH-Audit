@@ -1,6 +1,17 @@
 from unittest.mock import MagicMock, patch
+
+import pytest
 from click.testing import CliRunner
+
+import gh_audit.config as config
 from gh_audit.cli import cli
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "_CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
 
 def test_scan_requires_repo_or_org():
@@ -26,7 +37,7 @@ def test_scan_unknown_module_warns():
          patch("gh_audit.cli.clone_repo", return_value="/tmp/fake"), \
          patch("gh_audit.cli.cleanup_repo"):
         cfg = MagicMock()
-        cfg.token = None
+        cfg.effective_token = None
         cfg.modules = ["secrets"]
         cfg.results_dir = MagicMock()
         cfg.history_depth = 1
@@ -39,7 +50,7 @@ def test_doctor_runs_without_token():
     runner = CliRunner()
     with patch("gh_audit.cli.Config.load") as mock_cfg:
         cfg = MagicMock()
-        cfg.token = None
+        cfg.effective_token = None
         mock_cfg.return_value = cfg
         result = runner.invoke(cli, ["doctor"])
     assert result.exit_code == 0
@@ -86,14 +97,15 @@ def test_config_set_token_warns(tmp_path):
     assert "GITHUB_TOKEN" in result.output or "token" in result.output.lower()
 
 
-def test_failed_clone_returns_failure_and_continues_org_scan(tmp_path):
+def test_failed_clone_returns_failure_and_continues_org_scan(tmp_path, monkeypatch):
     from gh_audit.config import Config
     from gh_audit.discovery import RepoInfo
     repos = [RepoInfo(f"org/{name}", "main", True, f"https://github.com/org/{name}.git", "abc")
              for name in ("failed", "successful")]
+    monkeypatch.setenv("GITHUB_TOKEN", "session-config-canary")
     with patch("gh_audit.cli.Config.load", return_value=Config(results_dir=tmp_path)), \
-         patch("gh_audit.cli.list_org_repos", return_value=repos), \
-         patch("gh_audit.cli.clone_repo", side_effect=[RuntimeError("Clone failed"), str(tmp_path)]), \
+         patch("gh_audit.cli.list_org_repos", return_value=repos) as discover, \
+         patch("gh_audit.cli.clone_repo", side_effect=[RuntimeError("Clone failed"), str(tmp_path)]) as clone, \
          patch("gh_audit.cli.checkout_sha", return_value="abc"), \
          patch("gh_audit.cli.SecretsScanner.scan", return_value=[]), \
          patch("gh_audit.cli.cleanup_repo") as cleanup, \
@@ -101,6 +113,8 @@ def test_failed_clone_returns_failure_and_continues_org_scan(tmp_path):
         result = CliRunner().invoke(cli, ["scan", "--org", "org", "--modules", "secrets"])
     assert result.exit_code == 1
     assert "Clone failed" in result.output
+    discover.assert_called_once_with("org", "session-config-canary")
+    assert [call.args[1] for call in clone.call_args_list] == ["session-config-canary"] * 2
     report.assert_called_once()
     assert report.call_args.args[1] == "org/successful"
     cleanup.assert_called_once_with(str(tmp_path))

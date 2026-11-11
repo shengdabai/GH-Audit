@@ -53,6 +53,7 @@ def cli():
 def scan(repo, org, branch, modules, output, min_severity, diff):
     """Scan a repo or org for security issues."""
     cfg = Config.load()
+    token = cfg.effective_token
     output_formats = [o.strip() for o in output.split(",")]
     enabled_modules = [m.strip() for m in modules.split(",")] if modules else cfg.modules
 
@@ -66,9 +67,9 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
     try:
         if org:
             console.print(f"[bold]Discovering repos in org:[/bold] {org}")
-            repos = list_org_repos(org, cfg.token)
+            repos = list_org_repos(org, token)
         elif repo:
-            repos = [get_repo_info(repo, cfg.token)]
+            repos = [get_repo_info(repo, token)]
         else:
             raise click.UsageError("Provide REPO or --org")
     except click.UsageError:
@@ -93,11 +94,11 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         all_findings = []
         repo_path = None
         try:
-            repo_path = clone_repo(repo_info, cfg.token, branch=scan_cfg.branch)
+            repo_path = clone_repo(repo_info, token, branch=scan_cfg.branch)
             scan_cfg.commit_sha = checkout_sha(repo_path)
             for mod_name in enabled_modules:
                 if mod_name == "governance":
-                    scanner = GovernanceScanner(token=cfg.token)
+                    scanner = GovernanceScanner(token=token)
                 elif mod_name in _ALL_SCANNERS:
                     scanner = _ALL_SCANNERS[mod_name]()
                 else:
@@ -166,11 +167,11 @@ def _write_reports(findings, repo_name, output_formats, cfg):
 def doctor():
     """Check tool availability and token status."""
     from github import Github  # noqa: PLC0415 — lazy import to avoid slow startup
-    cfg = Config.load()
+    token = Config.load().effective_token
     console.print("\n[bold]gh-audit doctor[/bold]\n")
-    if cfg.token:
+    if token:
         try:
-            gh = Github(cfg.token)
+            gh = Github(token)
             rate = gh.get_rate_limit().core
             console.print(f"[green]✓[/green] GitHub token   valid (rate limit: {rate.remaining}/{rate.limit})")
         except Exception as e:

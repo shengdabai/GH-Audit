@@ -10,7 +10,7 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
 @dataclass
 class Config:
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
     modules: list[str] = field(default_factory=lambda: ["secrets", "pii", "governance"])
     output_formats: list[str] = field(default_factory=lambda: ["terminal"])
     min_severity: str = "low"
@@ -20,19 +20,22 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         cfg = cls()
-        cfg.token = os.environ.get("GITHUB_TOKEN")
         if _CONFIG_FILE.exists():
             try:
                 data = json.loads(_CONFIG_FILE.read_text())
             except (json.JSONDecodeError, OSError):
                 data = {}
-            if not cfg.token:
-                cfg.token = data.get("token")
+            cfg.token = data.get("token")
             cfg.modules = data.get("modules", cfg.modules)
             cfg.output_formats = data.get("output_formats", cfg.output_formats)
             cfg.min_severity = data.get("min_severity", cfg.min_severity)
             cfg.history_depth = data.get("history_depth", cfg.history_depth)
         return cfg
+
+    @property
+    def effective_token(self) -> str | None:
+        """Use the session token for requests without saving it to disk."""
+        return os.environ.get("GITHUB_TOKEN") or self.token
 
     def save(self) -> None:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
