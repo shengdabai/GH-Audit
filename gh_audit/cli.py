@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,10 +10,14 @@ from rich.console import Console
 from gh_audit.config import Config
 from gh_audit.discovery import cleanup_repo, clone_repo, checkout_sha, get_repo_info, list_org_repos
 from gh_audit.models import Severity
-from gh_audit.normalizer import deduplicate, diff_findings, load_previous_content_fingerprints, load_suppressions
+from gh_audit.normalizer import (
+    deduplicate, diff_findings, known_sast_content_id, load_previous_content_fingerprints,
+    load_suppressions,
+)
 from gh_audit.reporters.html_report import HtmlReporter
 from gh_audit.reporters.json_report import JsonReporter
 from gh_audit.reporters.terminal import TerminalReporter
+from gh_audit.sast_identity import CONTENT_ID
 from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 from gh_audit.scanners.governance import GovernanceScanner
 from gh_audit.scanners.iac import IacScanner
@@ -127,7 +132,9 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         all_findings = deduplicate(all_findings)
 
         if diff:
-            prev_fps = load_previous_content_fingerprints(cfg.results_dir, repo_info.full_name)
+            prev_fps = load_previous_content_fingerprints(
+                cfg.results_dir, repo_info.full_name, count_occurrences=True,
+            )
             all_findings = diff_findings(all_findings, prev_fps)
             console.print(f"  [dim]--diff: {len(all_findings)} new findings vs last scan[/dim]")
 
@@ -137,7 +144,7 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         # Apply suppressions
         suppressed = load_suppressions()
         filtered = [f for f in filtered
-                    if f.compute_content_fingerprint() not in suppressed]
+                    if (identity := f.compute_content_fingerprint()) is None or identity not in suppressed]
 
         _write_reports(filtered, repo_info.full_name, output_formats, cfg)
 
@@ -225,6 +232,13 @@ def history(repo):
 @click.option("--expires", default="30d", help="e.g. 30d, 90d")
 def suppress(fingerprint, reason, expires):
     """Suppress a finding by its content fingerprint (shown in JSON report)."""
+    if CONTENT_ID.fullmatch(fingerprint):
+        if not known_sast_content_id(Config.load().results_dir, fingerprint):
+            raise click.BadParameter("SAST content ID was not found in a local JSON report",
+                                     param_hint="fingerprint")
+    elif not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise click.BadParameter("Use the content fingerprint from a JSON report",
+                                 param_hint="fingerprint")
     suppress_file = Path.home() / ".gh-audit" / "suppressions.json"
     data = json.loads(suppress_file.read_text()) if suppress_file.exists() else {}
     data[fingerprint] = {"reason": reason, "expires": expires, "created_at": datetime.now(timezone.utc).isoformat()}

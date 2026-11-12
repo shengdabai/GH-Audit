@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -85,6 +86,34 @@ def test_suppress_stores_fingerprint(tmp_path, monkeypatch):
     assert fake_fp in data
     assert data[fake_fp]["reason"] == "test data"
     assert "created_at" in data[fake_fp]
+
+
+def test_suppress_requires_known_keyed_sast_content_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    identity = "sast-v1:" + "a" * 64
+    command = ["suppress", identity, "--reason", "fixture"]
+    runner = CliRunner()
+    result = runner.invoke(cli, command)
+    assert result.exit_code == 2
+    assert "not found in a local JSON report" in result.output
+    suppressions = tmp_path / ".gh-audit" / "suppressions.json"
+    assert not suppressions.exists()
+
+    results = tmp_path / "results" / "org_repo"
+    results.mkdir(parents=True)
+    (results / "20261112_120000.json").write_text(json.dumps({
+        "findings": [{"category": "sast", "content_fingerprint": identity}],
+    }))
+    result = runner.invoke(cli, command)
+    assert result.exit_code == 0
+    assert identity in json.loads(suppressions.read_text())
+
+
+def test_suppress_rejects_missing_identity_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    result = CliRunner().invoke(cli, ["suppress", "sast-unavailable:fixture", "--reason", "fixture"])
+    assert result.exit_code == 2
+    assert not (tmp_path / ".gh-audit" / "suppressions.json").exists()
 
 
 def test_config_set_token_warns(tmp_path):

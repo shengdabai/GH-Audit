@@ -36,6 +36,22 @@ gh-audit doctor
 | sca | ✓ OSV API fallback | osv-scanner |
 | iac | - | trivy, checkov |
 
+SAST reports include rule IDs and checkout-relative locations. They omit
+source snippets, tool messages, and tool-provided URLs. Where available, the
+scanner computes a keyed content ID from the full match, scoped to this
+installation, repository, branch, scanner, and rule. The scanner verifies
+selected checkout bytes against the scanned Git commit before assigning an ID.
+Keep the owner-only key
+in the local gh-audit configuration directory. A change to the matched source
+creates a new ID, and moving an identical match within the same scope keeps
+the ID.
+
+When source or secure key storage is unavailable, the JSON content ID is null.
+Diff and suppression filters keep those findings visible. Older SAST fingerprints and
+suppressions must be replaced with IDs from a new scan. Generate a local JSON
+report before suppressing a SAST finding. Deleting the local key also
+invalidates earlier SAST IDs.
+
 ## Optional Tools
 
 ```bash
@@ -50,6 +66,6 @@ gh-audit scan owner/repo [--branch main] [--modules secrets,pii] [--output termi
 gh-audit scan --org myorg
 gh-audit doctor
 gh-audit history owner/repo
-gh-audit suppress <finding_id> --reason "false positive" --expires 30d
+gh-audit suppress <content_fingerprint> --reason "false positive" --expires 30d
 gh-audit config set token ghp_xxx
 ```
