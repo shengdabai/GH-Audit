@@ -11,13 +11,13 @@ from gh_audit.config import Config
 from gh_audit.discovery import cleanup_repo, clone_repo, checkout_sha, get_repo_info, list_org_repos
 from gh_audit.models import Severity
 from gh_audit.normalizer import (
-    deduplicate, diff_findings, known_sast_content_id, load_previous_content_fingerprints,
-    load_suppressions,
+    deduplicate, diff_findings, known_sast_content_id, load_suppressions,
 )
 from gh_audit.reporters.html_report import HtmlReporter
 from gh_audit.reporters.json_report import JsonReporter
 from gh_audit.reporters.terminal import TerminalReporter
 from gh_audit.sast_identity import CONTENT_ID
+from gh_audit.scan_baseline import BaselineError, ScanBaseline
 from gh_audit.scanners.base import ScanConfig, ScanIncompleteError
 from gh_audit.scanners.governance import GovernanceScanner
 from gh_audit.scanners.iac import IacScanner
@@ -29,6 +29,7 @@ from gh_audit.scanners.secrets import SecretsScanner
 console = Console()
 
 _SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
+_OUTPUT_FORMATS = {"terminal", "json", "html"}
 
 _KNOWN_MODULES = {"secrets", "pii", "sast", "sca", "iac", "governance"}
 
@@ -54,13 +55,16 @@ def cli():
 @click.option("--output", default="terminal", help="Comma-separated: terminal,json,html")
 @click.option("--min-severity", default="low",
               type=click.Choice(["info", "low", "medium", "high", "critical"]))
-@click.option("--diff", is_flag=True, help="Only report new findings vs last scan")
+@click.option("--diff", is_flag=True, help="Only report new findings vs the last complete scan in this scope")
 def scan(repo, org, branch, modules, output, min_severity, diff):
     """Scan a repo or org for security issues."""
     cfg = Config.load()
     token = cfg.effective_token
     output_formats = [o.strip() for o in output.split(",")]
+    if any(fmt not in _OUTPUT_FORMATS for fmt in output_formats):
+        raise click.BadParameter("Choose one or more of terminal, json, and html", param_hint="--output")
     enabled_modules = [m.strip() for m in modules.split(",")] if modules else cfg.modules
+    enabled_modules = list(dict.fromkeys(enabled_modules))
 
     unknown = [m for m in enabled_modules if m not in _KNOWN_MODULES]
     if unknown:
@@ -98,6 +102,7 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
 
         all_findings = []
         repo_path = None
+        repo_complete = True
         try:
             repo_path = clone_repo(repo_info, token, branch=scan_cfg.branch)
             scan_cfg.commit_sha = checkout_sha(repo_path)
@@ -117,28 +122,51 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
                     findings = scanner.scan(repo_path, scan_cfg)
                 except ScanIncompleteError as e:
                     failed = True
+                    repo_complete = False
                     console.print(f"  [red][INCOMPLETE][/red] {mod_name}: {e}")
                     continue
+                if mod_name == "governance" and any(f.rule_id == "github-api-error" for f in findings):
+                    failed = True
+                    repo_complete = False
+                    console.print("  [red][INCOMPLETE][/red] governance: GitHub repository lookup failed")
+                else:
+                    console.print(f"  [green]✓[/green] {mod_name}: {len(findings)} findings")
                 all_findings.extend(findings)
-                console.print(f"  [green]✓[/green] {mod_name}: {len(findings)} findings")
         except RuntimeError as e:
             failed = True
+            repo_complete = False
             console.print(f"[red][INCOMPLETE] {repo_info.full_name}: {e}[/red]")
-            continue
+            if not all_findings:
+                continue
         finally:
             if repo_path:
                 cleanup_repo(repo_path)
 
         all_findings = deduplicate(all_findings)
+        displayed = all_findings
+        baseline = None
 
-        if diff:
-            prev_fps = load_previous_content_fingerprints(
-                cfg.results_dir, repo_info.full_name, count_occurrences=True,
-            )
-            all_findings = diff_findings(all_findings, prev_fps)
-            console.print(f"  [dim]--diff: {len(all_findings)} new findings vs last scan[/dim]")
+        if repo_complete:
+            baseline = ScanBaseline(cfg.results_dir, repo_info.full_name, scan_cfg.branch, enabled_modules)
+            previous = None
+            if diff:
+                try:
+                    previous = baseline.load()
+                except BaselineError:
+                    console.print("  [yellow]--diff could not read the baseline. Showing current findings.[/yellow]")
+                else:
+                    if previous is None:
+                        console.print("  [dim]--diff has no complete baseline for this scope. "
+                                      "Showing current findings.[/dim]")
+            if previous is not None:
+                displayed = diff_findings(all_findings, previous, show_grown_sast_groups=True)
+                console.print(f"  [dim]--diff: {len(displayed)} new or ambiguous findings "
+                              "vs last complete scan[/dim]")
+        elif diff:
+            console.print("  [yellow]--diff skipped for this incomplete scan. "
+                          "Showing current findings.[/yellow]")
 
-        filtered = [f for f in all_findings
+        filtered = [f for f in displayed
                     if _SEVERITY_ORDER.index(f.severity.value) >= min_sev_idx]
 
         # Apply suppressions
@@ -146,7 +174,18 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         filtered = [f for f in filtered
                     if (identity := f.compute_content_fingerprint()) is None or identity not in suppressed]
 
-        _write_reports(filtered, repo_info.full_name, output_formats, cfg)
+        try:
+            _write_reports(filtered, repo_info.full_name, output_formats, cfg)
+        except OSError:
+            failed = True
+            console.print("  [red][INCOMPLETE][/red] Could not deliver all requested reports")
+            continue
+        if baseline is not None:
+            try:
+                baseline.save(all_findings)
+            except BaselineError:
+                console.print("  [yellow]Could not save the scan baseline. "
+                              "The next diff may show these findings again.[/yellow]")
 
     if failed:
         raise SystemExit(1)

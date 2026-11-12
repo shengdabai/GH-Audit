@@ -52,6 +52,29 @@ suppressions must be replaced with IDs from a new scan. Generate a local JSON
 report before suppressing a SAST finding. Deleting the local key also
 invalidates earlier SAST IDs.
 
+### Comparing scans
+
+`--diff` compares against the last complete scan of the same repository,
+branch, and selected modules. After report delivery, a complete scan saves
+a private snapshot of fingerprint counts collected before display filters.
+This works with terminal, HTML, and JSON output. The snapshot contains counts
+and fingerprint IDs.
+Reports and their history keep their existing format.
+
+If an identical SAST match appears more times than before, the diff shows all
+current locations for that match. Counts establish that the group grew. They
+cannot establish which location is new. Moving an identical match without
+changing the count keeps it out of the diff.
+
+The first scan in a scope shows current findings. Earlier JSON reports may
+contain only filtered results, so they cannot establish a complete baseline.
+Incomplete scans preserve the previous snapshot and show the findings from
+modules that finished. Report delivery failures also preserve the previous
+snapshot. If the CLI cannot read a snapshot, it shows current findings.
+If it cannot save a snapshot, it warns that the next diff may repeat findings.
+On Windows, the snapshot inherits access permissions from the per-user results
+directory. The CLI rejects links and reparse points in the snapshot path.
+
 ## Optional Tools
 
 ```bash
