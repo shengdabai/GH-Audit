@@ -244,7 +244,12 @@ class SastScanner(BaseScanner):
             raise ScanIncompleteError("scan incomplete: sast returned invalid or unreadable data") from exc
 
     def _run_semgrep(self, root: Path, config: ScanConfig) -> list[Finding]:
-        data = run_json_tool(["semgrep", "--config=auto", "--json", str(root)])
+        # Semgrep rejects auto with metrics disabled. Its default Registry pack
+        # can be requested explicitly without enabling usage metrics.
+        data = run_json_tool([
+            "semgrep", "--config=p/default", "--metrics=off", "--disable-version-check",
+            "--json", str(root),
+        ])
         if data.get("errors"):
             raise ScanIncompleteError("scan incomplete: semgrep reported scan errors")
         records = result_records(data, "results")
