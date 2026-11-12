@@ -50,6 +50,19 @@ def test_sast_available_when_semgrep_present():
         assert SastScanner().is_available() is True
 
 
+@pytest.mark.parametrize("is_public", [False, True])
+def test_semgrep_loads_default_rules_without_metrics(tmp_path, is_public):
+    scan_config = ScanConfig(repo="org/repo", branch="main", commit_sha="abc", is_public=is_public)
+    with patch.object(SastScanner, "_external_tool_available", return_value=True):
+        with patch.object(sast, "run_json_tool", return_value={"results": [], "errors": []}) as run:
+            assert SastScanner().scan(str(tmp_path), scan_config) == []
+
+    run.assert_called_once_with([
+        "semgrep", "--config=p/default", "--metrics=off", "--disable-version-check",
+        "--json", str(tmp_path.resolve()),
+    ])
+
+
 def test_semgrep_returns_findings(tmp_path):
     semgrep_result = {
         "results": [{

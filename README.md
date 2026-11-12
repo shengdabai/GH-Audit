@@ -97,6 +97,13 @@ to the OSV API. For npm, it uses entries with an official registry resolution
 or no resolution field. It skips mirrors, ranges, direct URLs, local sources,
 and Git references.
 
+### SAST networking
+
+Semgrep fetches the default ruleset from the Semgrep Registry. The CLI
+disables Semgrep usage metrics and version checks. Rule downloads still use
+the network for both public and private repositories. The SCA networking
+setting does not apply to SAST.
+
 ## Optional Tools
 
 ```bash
