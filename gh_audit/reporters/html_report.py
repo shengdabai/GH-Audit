@@ -16,12 +16,13 @@ class HtmlReporter:
         rows = ""
         for f in findings:
             color = _SEVERITY_COLOR.get(f.severity.value, "#6b7280")
+            location = escape(f"{f.file_path}:{f.line_start}")
             rows += (
                 f"<tr>"
                 f"<td><span style='color:{color};font-weight:bold'>{escape(f.severity.value.upper())}</span></td>"
                 f"<td>{escape(f.category.value)}</td>"
                 f"<td>{escape(f.title)}</td>"
-                f"<td><code>{escape(f.file_path)}:{f.line_start}</code></td>"
+                f"<td><code>{location}</code></td>"
                 f"<td><code>{escape(f.evidence_redacted)}</code></td>"
                 f"<td>{escape(f.recommendation)}</td>"
                 f"</tr>"

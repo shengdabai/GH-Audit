@@ -1,6 +1,11 @@
 import json
 from datetime import datetime
+from io import StringIO
+
+from rich.console import Console
+
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
+from gh_audit.reporters import terminal
 from gh_audit.reporters.json_report import JsonReporter
 from gh_audit.reporters.html_report import HtmlReporter
 
@@ -43,7 +48,8 @@ def test_html_reporter_escapes_xss(tmp_path):
     f = Finding(
         finding_id="xss", fingerprint="xss",
         repo="org/repo", branch="main", commit_sha="abc",
-        file_path='<script>alert(1)</script>.py', line_start=1, line_end=1,
+        file_path='<script>alert(1)</script>.py',
+        line_start='</code><svg onload=alert(2)>', line_end=1,
         category=Category.SECRETS, rule_id="xss-test",
         title='<img src=x onerror=alert(1)>',
         severity=Severity.HIGH, confidence=Confidence.CONFIRMED,
@@ -54,8 +60,31 @@ def test_html_reporter_escapes_xss(tmp_path):
     )
     out = tmp_path / "report.html"
     from gh_audit.reporters.html_report import HtmlReporter
-    HtmlReporter().write([f], str(out), repo="org/repo")
+    HtmlReporter().write([f], str(out), repo='org/</title><iframe src=fixture>')
     content = out.read_text()
     assert "<script>" not in content
     assert "<img src=x" not in content
+    assert "<svg onload" not in content
+    assert "<iframe src" not in content
+    assert "&lt;/code&gt;&lt;svg onload=alert(2)&gt;" in content
     assert "&lt;script&gt;" in content or "&lt;img" in content
+
+
+def test_terminal_reports_fields_as_literal_text_without_active_controls(monkeypatch):
+    finding = _finding()
+    finding.title = "[/unopened] [green]"
+    finding.file_path = "[bold]app.py"
+    finding.line_start = "\rnext"
+    finding.evidence_redacted = "\x1b[2J\x07"
+    finding.recommendation = "Review 中文 \x9b2J\tend"
+    output = StringIO()
+    monkeypatch.setattr(terminal, "console", Console(file=output, width=190, color_system=None))
+
+    terminal.TerminalReporter().print([finding], "org/[red]repo[/red]")
+
+    report = output.getvalue()
+    for literal in ("org/[red]repo[/red]", "[/unopened] [green]", "[bold]app.py",
+                    r"\rnext", r"\x1b[2J\x07", r"Review 中文 \x9b2J\tend"):
+        assert literal in report
+    for control in ("\r", "\x1b", "\x07", "\x9b", "\t"):
+        assert control not in report
