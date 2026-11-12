@@ -1,5 +1,5 @@
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -54,6 +54,7 @@ class Finding:
     scanner: str
     discovered_at: datetime
     status: Status
+    sast_content_id: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.fingerprint:
@@ -61,11 +62,15 @@ class Finding:
 
     def compute_fingerprint(self) -> str:
         """Location-aware fingerprint for within-scan deduplication."""
+        if self.category == Category.SAST:
+            return self.fingerprint or f"sast-unavailable:{self.finding_id}"
         raw = f"{self.category}:{self.file_path}:{self.line_start}:{self.rule_id}:{self.evidence_redacted}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
-    def compute_content_fingerprint(self) -> str:
+    def compute_content_fingerprint(self) -> str | None:
         """Content-only fingerprint for cross-scan diff (location-independent)."""
+        if self.category == Category.SAST:
+            return self.sast_content_id
         raw = f"{self.category}:{self.rule_id}:{self.evidence_redacted}"
         return hashlib.sha256(raw.encode()).hexdigest()
 

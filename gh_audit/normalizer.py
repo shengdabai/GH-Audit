@@ -1,11 +1,16 @@
 import re
-from gh_audit.models import Finding
+from collections import Counter
+from gh_audit.models import Category, Finding
+from gh_audit.sast_identity import CONTENT_ID
 
 
 def deduplicate(findings: list[Finding]) -> list[Finding]:
     seen: set[str] = set()
     result = []
     for f in findings:
+        if f.category == Category.SAST and not f.fingerprint.startswith("sast-location-v1:"):
+            result.append(f)
+            continue
         if f.fingerprint not in seen:
             seen.add(f.fingerprint)
             result.append(f)
@@ -39,27 +44,75 @@ def redact_id_number(value: str) -> str:
     return "***"
 
 
-def diff_findings(current: list[Finding], previous_content_fps: set[str]) -> list[Finding]:
-    """Return only findings whose content_fingerprint was not in previous scan."""
-    return [f for f in current if f.compute_content_fingerprint() not in previous_content_fps]
+def diff_findings(current: list[Finding], previous_content_fps: set[str] | Counter[str]) -> list[Finding]:
+    """Match SAST occurrences one to one, and keep other modules' content set behavior."""
+    unmatched = Counter(previous_content_fps)
+    new = []
+    for finding in current:
+        identity = finding.compute_content_fingerprint()
+        if identity is None or identity not in previous_content_fps:
+            new.append(finding)
+        elif finding.category == Category.SAST:
+            if unmatched[identity]:
+                unmatched[identity] -= 1
+            else:
+                new.append(finding)
+    return new
 
 
-def load_previous_content_fingerprints(results_dir, repo_name: str) -> set[str]:
+def _report_content_fingerprints(data):
+    for finding in data.get("findings", []):
+        identity = finding.get("content_fingerprint")
+        if not isinstance(identity, str):
+            continue
+        if finding.get("category") == Category.SAST and not CONTENT_ID.fullmatch(identity):
+            continue
+        yield identity
+
+
+def load_previous_content_fingerprints(
+    results_dir, repo_name: str, *, count_occurrences: bool = False,
+) -> set[str] | Counter[str]:
     """Load content fingerprints from the most recent previous scan JSON."""
     import json
     from pathlib import Path
     safe_name = repo_name.replace("/", "_")
     repo_dir = Path(results_dir) / safe_name
-    if not repo_dir.exists():
-        return set()
     files = sorted(repo_dir.glob("*.json"), reverse=True)
-    if not files:
-        return set()
+    counts = Counter()
     try:
-        data = json.loads(files[0].read_text())
-        return {f.get("content_fingerprint", "") for f in data.get("findings", [])}
+        if files:
+            data = json.loads(files[0].read_text())
+            counts = Counter(_report_content_fingerprints(data))
     except Exception:
-        return set()
+        pass
+    return counts if count_occurrences else set(counts)
+
+
+def known_sast_content_id(results_dir, identity: str) -> bool:
+    """Accept a scoped SAST suppression ID only from a local JSON report."""
+    import json
+    from pathlib import Path
+
+    root = Path(results_dir)
+    if root.is_symlink():
+        return False
+    for directory in root.glob("*"):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        for report in directory.glob("*.json"):
+            if (not re.fullmatch(r"[0-9]{8}_[0-9]{6}\.json", report.name)
+                    or report.is_symlink() or not report.is_file()):
+                continue
+            try:
+                data = json.loads(report.read_text())
+                if any(finding.get("category") == Category.SAST
+                       and finding.get("content_fingerprint") == identity
+                       for finding in data.get("findings", [])):
+                    return True
+            except (AttributeError, OSError, TypeError, ValueError):
+                continue
+    return False
 
 
 def load_suppressions() -> set[str]:
