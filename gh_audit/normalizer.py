@@ -44,16 +44,29 @@ def redact_id_number(value: str) -> str:
     return "***"
 
 
-def diff_findings(current: list[Finding], previous_content_fps: set[str] | Counter[str]) -> list[Finding]:
+def diff_findings(
+    current: list[Finding], previous_content_fps: set[str] | Counter[str], *,
+    show_grown_sast_groups: bool = False,
+) -> list[Finding]:
     """Match SAST occurrences one to one, and keep other modules' content set behavior."""
     unmatched = Counter(previous_content_fps)
+    grown = set()
+    if show_grown_sast_groups:
+        current_counts = Counter(
+            identity for finding in current
+            if finding.category == Category.SAST
+            and (identity := finding.compute_content_fingerprint()) is not None
+        )
+        grown = {identity for identity, count in current_counts.items() if count > unmatched[identity]}
     new = []
     for finding in current:
         identity = finding.compute_content_fingerprint()
         if identity is None or identity not in previous_content_fps:
             new.append(finding)
         elif finding.category == Category.SAST:
-            if unmatched[identity]:
+            if identity in grown:
+                new.append(finding)
+            elif unmatched[identity]:
                 unmatched[identity] -= 1
             else:
                 new.append(finding)

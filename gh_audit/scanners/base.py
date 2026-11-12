@@ -26,7 +26,7 @@ def result_records(data, key, *, optional=False, nullable=False):
     return value
 
 
-def run_json_tool(command, *, success_codes=(0, 1)):
+def run_json_tool(command, *, success_codes=(0, 1), require_empty_stderr=False):
     tool = command[0]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=120)
@@ -34,6 +34,8 @@ def run_json_tool(command, *, success_codes=(0, 1)):
         raise ScanIncompleteError(f"scan incomplete: {tool} could not run ({type(exc).__name__})") from exc
     if result.returncode not in success_codes:
         raise ScanIncompleteError(f"scan incomplete: {tool} exited {result.returncode}")
+    if require_empty_stderr and result.stderr.strip():
+        raise ScanIncompleteError(f"scan incomplete: {tool} reported errors")
     try:
         data = json.loads(result.stdout)
     except ValueError as exc:
@@ -61,6 +63,11 @@ class ScanConfig:
     commit_sha: str
     is_public: bool
     history_depth: int = 100
+    sca_network: str = "auto"
+
+    @property
+    def sca_is_offline(self) -> bool:
+        return self.sca_network == "offline" or (self.sca_network == "auto" and self.is_public is not True)
 
 
 class BaseScanner(ABC):

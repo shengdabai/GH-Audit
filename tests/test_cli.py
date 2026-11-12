@@ -22,6 +22,40 @@ def test_scan_requires_repo_or_org():
     assert "Provide REPO" in result.output or result.exit_code == 2
 
 
+@pytest.mark.parametrize(("option", "expected"), [([], "auto"),
+    (["--sca-network", "offline"], "offline"), (["--sca-network", "online"], "online")])
+def test_cli_passes_runtime_sca_network_policy_for_private_repository(tmp_path, option, expected):
+    from gh_audit.discovery import RepoInfo
+    repo = RepoInfo("org/repo", "main", False, "https://github.com/org/repo.git", "abc")
+    with patch("gh_audit.cli.get_repo_info", return_value=repo), \
+         patch("gh_audit.cli.clone_repo", return_value=str(tmp_path)), \
+         patch("gh_audit.cli.checkout_sha", return_value="abc"), \
+         patch("gh_audit.cli.cleanup_repo"), \
+         patch("gh_audit.cli.ScaScanner.scan", return_value=[]) as scanner, \
+         patch("gh_audit.cli.load_suppressions", return_value=set()):
+        result = CliRunner().invoke(cli, ["scan", "org/repo", "--modules", "sca", *option])
+    assert result.exit_code == 0, result.output
+    assert scanner.call_args.args[1].is_public is False
+    assert scanner.call_args.args[1].sca_network == expected
+
+
+def test_private_sca_missing_offline_tool_fails_cli_without_network(tmp_path):
+    from gh_audit.discovery import RepoInfo
+    repo = RepoInfo("org/repo", "main", False, "https://github.com/org/repo.git", "abc")
+    (tmp_path / "requirements.txt").write_text("example==1.0.0\n")
+    with patch("gh_audit.cli.get_repo_info", return_value=repo), \
+         patch("gh_audit.cli.clone_repo", return_value=str(tmp_path)), \
+         patch("gh_audit.cli.checkout_sha", return_value="abc"), \
+         patch("gh_audit.cli.cleanup_repo"), \
+         patch("gh_audit.cli.load_suppressions", return_value=set()), \
+         patch("shutil.which", return_value=None), patch("requests.post") as post:
+        result = CliRunner().invoke(cli, ["scan", "org/repo", "--modules", "sca"])
+    assert result.exit_code == 1
+    assert "INCOMPLETE" in result.output
+    assert "offline SCA requires" in result.output
+    post.assert_not_called()
+
+
 def test_scan_unknown_module_warns():
     """Unknown module names should produce a warning (not a hard failure)."""
     runner = CliRunner()

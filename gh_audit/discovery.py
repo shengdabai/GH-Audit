@@ -17,6 +17,13 @@ class RepoInfo:
     head_sha: str
 
 
+def _is_public(repo) -> bool:
+    visibility = getattr(repo, "visibility", None)
+    if visibility is not None:
+        return isinstance(visibility, str) and visibility == "public"
+    return getattr(repo, "private", None) is False
+
+
 def list_org_repos(org_name: str, token: str | None = None) -> list[RepoInfo]:
     gh = Github(token)
     org = gh.get_organization(org_name)
@@ -27,7 +34,7 @@ def list_org_repos(org_name: str, token: str | None = None) -> list[RepoInfo]:
             repos.append(RepoInfo(
                 full_name=repo.full_name,
                 default_branch=repo.default_branch,
-                is_public=not repo.private,
+                is_public=_is_public(repo),
                 clone_url=repo.clone_url,
                 head_sha=branch.commit.sha,
             ))
@@ -43,7 +50,7 @@ def get_repo_info(repo_name: str, token: str | None = None) -> RepoInfo:
     return RepoInfo(
         full_name=repo.full_name,
         default_branch=repo.default_branch,
-        is_public=not repo.private,
+        is_public=_is_public(repo),
         clone_url=repo.clone_url,
         head_sha=branch.commit.sha,
     )

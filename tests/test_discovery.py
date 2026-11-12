@@ -1,7 +1,8 @@
 import base64
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import pytest
-from gh_audit.discovery import clone_repo, cleanup_repo, RepoInfo
+from gh_audit.discovery import clone_repo, cleanup_repo, get_repo_info, list_org_repos, RepoInfo
 
 
 def _make_repo_info():
@@ -12,6 +13,30 @@ def _make_repo_info():
         clone_url="https://github.com/org/repo.git",
         head_sha="abc123",
     )
+
+
+@pytest.mark.parametrize(("attributes", "public"), [
+    ({"visibility": "public", "private": False}, True),
+    ({"visibility": "private", "private": True}, False),
+    ({"visibility": "internal", "private": False}, False),
+    ({"visibility": "unknown", "private": False}, False),
+    ({"private": False}, True),
+    ({"visibility": None, "private": False}, True),
+    ({"private": 0}, False),
+    ({"private": "false"}, False),
+    ({}, False),
+])
+def test_discovery_only_trusts_explicit_visibility_or_literal_legacy_boolean(attributes, public):
+    repo = SimpleNamespace(
+        full_name="org/repo", default_branch="main", clone_url="https://github.com/org/repo.git",
+        get_branch=lambda branch: SimpleNamespace(commit=SimpleNamespace(sha="abc")),
+        **attributes,
+    )
+    with patch("gh_audit.discovery.Github") as github:
+        github.return_value.get_repo.return_value = repo
+        github.return_value.get_organization.return_value.get_repos.return_value = [repo]
+        assert get_repo_info("org/repo").is_public is public
+        assert list_org_repos("org")[0].is_public is public
 
 
 def test_clone_repo_redacts_token_on_failure():
