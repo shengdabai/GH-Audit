@@ -1,5 +1,8 @@
+import re
+
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 from rich import box
 from gh_audit.models import Finding, Severity
 
@@ -12,13 +15,20 @@ _SEVERITY_STYLE = {
 }
 
 _SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+_DISPLAY_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]")
 
 console = Console()
 
 
+def _literal(value: str, *, style: str = "") -> Text:
+    """Keep report data literal and make terminal controls visible."""
+    safe = _DISPLAY_CONTROLS.sub(lambda match: match[0].encode("unicode_escape").decode("ascii"), value)
+    return Text(safe, style=style)
+
+
 class TerminalReporter:
     def print(self, findings: list[Finding], repo: str) -> None:
-        console.rule(f"[bold]gh-audit: {repo}[/bold]")
+        console.rule(_literal(f"gh-audit: {repo}", style="bold"))
 
         if not findings:
             console.print("[green]No findings.[/green]")
@@ -36,12 +46,12 @@ class TerminalReporter:
         for f in sorted(findings, key=lambda x: _SEVERITY_ORDER.index(x.severity.value)):
             style = _SEVERITY_STYLE.get(f.severity.value, "")
             table.add_row(
-                f"[{style}]{f.severity.value.upper()}[/{style}]",
-                f.category.value,
-                f.title,
-                f"{f.file_path}:{f.line_start}",
-                f.evidence_redacted,
-                f.recommendation,
+                _literal(f.severity.value.upper(), style=style),
+                _literal(f.category.value),
+                _literal(f.title),
+                _literal(f"{f.file_path}:{f.line_start}"),
+                _literal(f.evidence_redacted),
+                _literal(f.recommendation),
             )
 
         console.print(table)
