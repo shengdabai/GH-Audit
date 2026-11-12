@@ -17,7 +17,7 @@ def test_scanners_never_read_symlink_targets(tmp_path, scanner):
     outside.write_text("synthetic private content")
     (repo / "requirements.txt").symlink_to(outside)
     (repo / "linked-directory").symlink_to(tmp_path, target_is_directory=True)
-    config = ScanConfig("org/repo", "main", "abc", False)
+    config = ScanConfig("org/repo", "main", "abc", True)
     with patch.object(Path, "read_text", side_effect=AssertionError("unexpected file read")), \
          patch.object(ScaScanner, "_external_tool_available", return_value=False), \
          patch("requests.post") as post:

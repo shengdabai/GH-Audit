@@ -1,7 +1,11 @@
 import json
 import re
+import shutil
+import subprocess
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from gh_audit.models import Category, Confidence, Finding, Severity, Status
@@ -10,20 +14,77 @@ from gh_audit.scanners.base import (
     run_json_tool,
 )
 
+_NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*", re.IGNORECASE | re.ASCII)
+_NPM_VERSION = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+_PYPI_PIN = re.compile(
+    r"([a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)"
+    r"(?:\[[a-z0-9._, -]+\])?\s*==\s*([^\s;#]+)(?=$|\s*[;#]|\s+--hash=)",
+    re.IGNORECASE | re.ASCII,
+)
+_PYPI_VERSION = re.compile(
+    r"v?(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*"
+    r"(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?[0-9]*)?"
+    r"(?:-[0-9]+|[-_.]?(?:post|rev|r)[-_.]?[0-9]*)?"
+    r"(?:[-_.]?dev[-_.]?[0-9]*)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?",
+    re.IGNORECASE | re.ASCII,
+)
+_OSV_V2 = re.compile(r"osv-scanner version: v?2\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?")
+
 
 class ScaScanner(BaseScanner):
     name = "sca"
 
     def scan(self, repo_path: str, config: ScanConfig) -> list[Finding]:
         try:
+            if config.sca_network not in ("auto", "offline", "online"):
+                raise ValueError("invalid SCA network policy")
+            if config.sca_is_offline:
+                return self._run_osv_scanner(repo_path, config, offline=True)
             if self._external_tool_available("osv-scanner"):
                 return self._run_osv_scanner(repo_path, config)
             return self._osv_api_fallback(repo_path, config)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError) as exc:
             raise ScanIncompleteError("scan incomplete: sca returned invalid or unreadable data") from exc
 
-    def _run_osv_scanner(self, repo_path: str, config: ScanConfig) -> list[Finding]:
-        data = run_json_tool(["osv-scanner", "--format=json", repo_path])
+    def _run_osv_scanner(self, repo_path: str, config: ScanConfig, *, offline: bool = False) -> list[Finding]:
+        if offline:
+            tool = shutil.which("osv-scanner")
+            if not tool:
+                raise ScanIncompleteError("scan incomplete: offline SCA requires OSV-Scanner v2 and a local database")
+            executable = Path(tool)
+            if not executable.is_absolute():
+                raise ScanIncompleteError("scan incomplete: offline SCA requires an absolute OSV-Scanner executable path")
+            try:
+                checkout = Path(repo_path).resolve(strict=True)
+                resolved_executable = executable.resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise ScanIncompleteError("scan incomplete: could not resolve offline OSV-Scanner paths") from None
+            if executable.is_relative_to(checkout) or resolved_executable.is_relative_to(checkout):
+                raise ScanIncompleteError("scan incomplete: offline OSV-Scanner must be installed outside the checkout")
+            binary = str(resolved_executable)
+            try:
+                version = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                raise ScanIncompleteError("scan incomplete: could not check OSV-Scanner version") from None
+            if version.returncode != 0 or not any(
+                    _OSV_V2.fullmatch(line.strip()) for line in version.stdout.splitlines()):
+                raise ScanIncompleteError("scan incomplete: offline SCA requires OSV-Scanner v2")
+            # Older versions can otherwise invoke external language tooling in offline mode.
+            command = [binary, "scan", "source", "--offline", "--format", "json", "--verbosity", "error", "--recursive",
+                       "--no-call-analysis=go", "--no-call-analysis=rust",
+                       str(checkout)]
+            try:
+                # OSV-Scanner can return 1 for findings even if it also logged an error.
+                data = run_json_tool(command, require_empty_stderr=True)
+            except ScanIncompleteError:
+                raise ScanIncompleteError(
+                    "scan incomplete: offline OSV-Scanner failed; check the scanner and local database"
+                ) from None
+        else:
+            data = run_json_tool(["osv-scanner", "--format=json", repo_path])
         findings = []
         for r in result_records(data, "results", nullable=True):
             for pkg in result_records(r, "packages"):
@@ -88,13 +149,10 @@ class ScaScanner(BaseScanner):
     def _parse_requirements(self, text: str) -> list[tuple[str, str]]:
         results = []
         for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r"^([A-Za-z0-9_\-\.]+)==([^\s;]+)", line)
-            if m:
+            m = _PYPI_PIN.match(line.strip())
+            if m and all(len(part) <= 255 for part in m.groups()) and _PYPI_VERSION.fullmatch(m.group(2)):
                 results.append((m.group(1), m.group(2)))
-        return results
+        return list(dict.fromkeys(results))
 
     def _parse_package_lock(self, text: str) -> list[tuple[str, str]]:
         data = json.loads(text)
@@ -105,8 +163,23 @@ class ScaScanner(BaseScanner):
         def add(name, info):
             name = info.get("name") or name
             version = info.get("version", "")
-            # Local paths and Git URLs are not registry versions.
-            if isinstance(name, str) and isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?", version):
+            if info.get("link") or not isinstance(version, str):
+                return
+            if version.startswith("npm:"):  # npm aliases in lockfile v1
+                name, _, version = version[4:].rpartition("@")
+            resolved = info.get("resolved")
+            if resolved:
+                if not isinstance(resolved, str):
+                    return
+                try:
+                    url = urlsplit(resolved)
+                except ValueError:
+                    return
+                if (url.scheme != "https" or url.netloc != "registry.npmjs.org" or not url.path
+                        or url.query or url.fragment):
+                    return
+            if (isinstance(name, str) and len(name) <= 214 and _NPM_NAME.fullmatch(name)
+                    and len(version) <= 256 and _NPM_VERSION.fullmatch(version)):
                 packages.append((name, version))
 
         if "packages" in data:  # lockfile v2/v3
@@ -139,7 +212,10 @@ class ScaScanner(BaseScanner):
                 "https://api.osv.dev/v1/querybatch",
                 json={"queries": queries},
                 timeout=15,
+                allow_redirects=False,
             )
+            if 300 <= resp.status_code < 400:
+                raise ValueError("OSV API redirect rejected")
             resp.raise_for_status()
             results = result_records(resp.json(), "results")
             if len(results) != len(packages):

@@ -84,6 +84,7 @@ def test_valid_empty_scan_stays_successful(scanner, tool, payload, code, tmp_pat
                                      {"results": [{}, {}]}])
 def test_osv_api_rejects_malformed_or_incomplete_batch(payload):
     with patch("requests.post") as post:
+        post.return_value.status_code = 200
         post.return_value.json.return_value = payload
         with pytest.raises(ScanIncompleteError, match="(?i)incomplete"):
             ScaScanner()._query_osv_api_batch([("example", "1.0.0")])

@@ -33,7 +33,7 @@ gh-audit doctor
 | pii | ✓ CN phone/ID/bank + email | presidio |
 | governance | ✓ GitHub API | - |
 | sast | - | semgrep, bandit |
-| sca | ✓ OSV API fallback | osv-scanner |
+| sca | OSV API fallback for online scans | osv-scanner |
 | iac | - | trivy, checkov |
 
 SAST reports include rule IDs and checkout-relative locations. They omit
@@ -55,7 +55,8 @@ invalidates earlier SAST IDs.
 ### Comparing scans
 
 `--diff` compares against the last complete scan of the same repository,
-branch, and selected modules. After report delivery, a complete scan saves
+branch, selected modules, and SCA networking mode when enabled. After report
+delivery, a complete scan saves
 a private snapshot of fingerprint counts collected before display filters.
 This works with terminal, HTML, and JSON output. The snapshot contains counts
 and fingerprint IDs.
@@ -75,6 +76,27 @@ If it cannot save a snapshot, it warns that the next diff may repeat findings.
 On Windows, the snapshot inherits access permissions from the per-user results
 directory. The CLI rejects links and reparse points in the snapshot path.
 
+### Dependency scan networking
+
+Dependency scans use `--sca-network auto` by default. Public repositories
+can use online OSV lookups. Private, internal, and unknown-visibility
+repositories use offline OSV-Scanner v2. Prepare the
+[local advisory database](https://google.github.io/osv-scanner/usage/offline-mode/)
+separately. If the tool or database is unavailable, SCA reports an incomplete
+scan. Offline mode disables call graph analysis and uses the existing local
+database without downloading or falling back to online lookups.
+
+Use `--sca-network offline` to restrict SCA lookups for any repository.
+Use `--sca-network online` only if you want to allow SCA to send dependency
+coordinates from the selected repositories to external advisory services.
+These options apply to SCA only. Repository discovery and cloning still
+contact GitHub.
+
+The built-in online fallback submits exact npm and PyPI registry coordinates
+to the OSV API. For npm, it uses entries with an official registry resolution
+or no resolution field. It skips mirrors, ranges, direct URLs, local sources,
+and Git references.
+
 ## Optional Tools
 
 ```bash
@@ -87,6 +109,7 @@ brew install osv-scanner trivy   # SCA + IaC
 ```bash
 gh-audit scan owner/repo [--branch main] [--modules secrets,pii] [--output terminal,json,html] [--min-severity high] [--diff]
 gh-audit scan --org myorg
+gh-audit scan owner/repo --modules sca --sca-network offline
 gh-audit doctor
 gh-audit history owner/repo
 gh-audit suppress <content_fingerprint> --reason "false positive" --expires 30d

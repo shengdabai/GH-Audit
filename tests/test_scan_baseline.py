@@ -75,7 +75,7 @@ def scan_cli(tmp_path, monkeypatch):
     monkeypatch.setattr(commands, "checkout_sha", lambda path: "a" * 40)
     monkeypatch.setattr(commands, "cleanup_repo", lambda path: None)
     monkeypatch.setattr(commands, "_ALL_SCANNERS", {
-        module: scanner(module) for module in ("secrets", "sast", "pii")
+        module: scanner(module) for module in ("secrets", "sast", "pii", "sca")
     })
 
     def run(*args):
@@ -130,6 +130,22 @@ def test_baseline_scopes_branch_module_set_and_repository(scan_cli):
                  ("org/another", "--modules", "secrets,pii")):
         assert "no complete baseline" in run(*args, "--diff").output
     assert len(list((results / scan_baseline._DIRECTORY).glob("*.json"))) == 4
+
+
+def test_sca_networking_mode_has_its_own_baseline(scan_cli):
+    run, results, outcomes, _ = scan_cli
+    outcomes["org/example", "main", "sca"] = [_finding("fixture dependency", category=Category.SCA)]
+    command = ("org/example", "--modules", "sca")
+    assert run(*command).exit_code == 0
+
+    offline = run(*command, "--sca-network", "offline", "--diff")
+    assert offline.exit_code == 0 and "no complete baseline" in offline.output
+
+    for mode in ("online", "offline"):
+        comparison = run(*command, "--sca-network", mode, "--diff")
+        assert comparison.exit_code == 0 and "0 new or ambiguous findings" in comparison.output
+
+    assert len(list((results / scan_baseline._DIRECTORY).glob("*.json"))) == 2
 
 
 @pytest.mark.parametrize("new_first", [False, True])

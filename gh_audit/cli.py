@@ -56,7 +56,10 @@ def cli():
 @click.option("--min-severity", default="low",
               type=click.Choice(["info", "low", "medium", "high", "critical"]))
 @click.option("--diff", is_flag=True, help="Only report new findings vs the last complete scan in this scope")
-def scan(repo, org, branch, modules, output, min_severity, diff):
+@click.option("--sca-network", default="auto", show_default=True,
+              type=click.Choice(["auto", "offline", "online"]),
+              help="Allow dependency lookups over the network. Auto allows them for public repos.")
+def scan(repo, org, branch, modules, output, min_severity, diff, sca_network):
     """Scan a repo or org for security issues."""
     cfg = Config.load()
     token = cfg.effective_token
@@ -98,6 +101,7 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
             commit_sha=repo_info.head_sha,
             is_public=repo_info.is_public,
             history_depth=cfg.history_depth,
+            sca_network=sca_network,
         )
 
         all_findings = []
@@ -147,7 +151,11 @@ def scan(repo, org, branch, modules, output, min_severity, diff):
         baseline = None
 
         if repo_complete:
-            baseline = ScanBaseline(cfg.results_dir, repo_info.full_name, scan_cfg.branch, enabled_modules)
+            comparison_modules = enabled_modules
+            if "sca" in enabled_modules:
+                network_scope = "sca:offline" if scan_cfg.sca_is_offline else "sca:online"
+                comparison_modules = [network_scope if name == "sca" else name for name in enabled_modules]
+            baseline = ScanBaseline(cfg.results_dir, repo_info.full_name, scan_cfg.branch, comparison_modules)
             previous = None
             if diff:
                 try:
